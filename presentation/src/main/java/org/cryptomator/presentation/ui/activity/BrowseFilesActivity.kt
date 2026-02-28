@@ -45,6 +45,7 @@ import org.cryptomator.presentation.ui.dialog.CreateFolderDialog
 import org.cryptomator.presentation.ui.dialog.ExportCloudFilesDialog
 import org.cryptomator.presentation.ui.dialog.FileNameDialog
 import org.cryptomator.presentation.ui.dialog.FileTypeNotSupportedDialog
+import org.cryptomator.presentation.ui.dialog.PerFileConflictDialog
 import org.cryptomator.presentation.ui.dialog.NoDirFileOrEmptyDialog
 import org.cryptomator.presentation.ui.dialog.ReplaceDialog
 import org.cryptomator.presentation.ui.dialog.SymLinkDialog
@@ -52,6 +53,7 @@ import org.cryptomator.presentation.ui.dialog.UploadCloudFileDialog
 import org.cryptomator.presentation.ui.fragment.BrowseFilesFragment
 import java.util.regex.Pattern
 import javax.inject.Inject
+import timber.log.Timber
 
 @Activity
 class BrowseFilesActivity : BaseActivity<ActivityLayoutBinding>(ActivityLayoutBinding::inflate), //
@@ -65,7 +67,8 @@ class BrowseFilesActivity : BaseActivity<ActivityLayoutBinding>(ActivityLayoutBi
 	SymLinkDialog.CallBack,
 	NoDirFileOrEmptyDialog.CallBack,
 	SearchView.OnQueryTextListener,
-	SearchView.OnCloseListener {
+	SearchView.OnCloseListener,
+	PerFileConflictDialog.Callback {
 
 	@Inject
 	lateinit var browseFilesPresenter: BrowseFilesPresenter
@@ -97,10 +100,10 @@ class BrowseFilesActivity : BaseActivity<ActivityLayoutBinding>(ActivityLayoutBi
 		browseFilesPresenter.onWindowFocusChanged(hasFocus)
 	}
 
-	override fun snackbarView(): View = browseFilesFragment().rootView()
+	override fun snackbarView(): View = browseFilesFragment()?.rootView() ?: binding.root
 
 	override val folder: CloudFolderModel
-		get() = browseFilesFragment().folder
+		get() = browseFilesFragment()?.folder ?: throw IllegalStateException("BrowseFilesFragment not attached")
 
 	override fun createFragment(): Fragment =
 		BrowseFilesFragment.newInstance(
@@ -119,11 +122,20 @@ class BrowseFilesActivity : BaseActivity<ActivityLayoutBinding>(ActivityLayoutBi
 	override fun onResume() {
 		super.onResume()
 
+		// Keep screen on while working with vault to prevent interruption during uploads/downloads
+		window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+
 		finishActivityDueToScreenLockEventReceiver = object : BroadcastReceiver() {
 			override fun onReceive(context: Context, intent: Intent) {
 				finish()
 			}
 		}.also { LocalBroadcastManager.getInstance(this).registerReceiver(it, IntentFilter(CryptorsService.SCREEN_AND_VAULT_LOCKED)) }
+	}
+
+	override fun onPause() {
+		super.onPause()
+		// Clear keep screen on flag when activity goes to background
+		window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 	}
 
 	override fun onBackPressed() {
@@ -135,10 +147,11 @@ class BrowseFilesActivity : BaseActivity<ActivityLayoutBinding>(ActivityLayoutBi
 			supportFragmentManager.backStackEntryCount > 0 -> {
 				supportFragmentManager.popBackStack()
 			}
-			hasCloudNodeSettings() && isNavigationMode(MOVE_CLOUD_NODE) && browseFilesFragment().folder.hasParent() -> {
-				browseFilesFragment().folder.parent?.let {
+			hasCloudNodeSettings() && isNavigationMode(MOVE_CLOUD_NODE) && (browseFilesFragment()?.folder?.hasParent() == true) -> {
+				val parent = browseFilesFragment()?.folder?.parent
+				parent?.let {
 					createBackStackFor(it)
-				} ?: throw ParentFolderIsNullException(browseFilesFragment().folder.name)
+				} ?: throw ParentFolderIsNullException(browseFilesFragment()?.folder?.name ?: "")
 			}
 			else -> {
 				super.onBackPressed()
@@ -176,63 +189,59 @@ class BrowseFilesActivity : BaseActivity<ActivityLayoutBinding>(ActivityLayoutBi
 			true
 		}
 		R.id.action_refresh -> {
-			browseFilesPresenter.onRefreshTriggered(browseFilesFragment().folder)
+			browseFilesFragment()?.folder?.let { browseFilesPresenter.onRefreshTriggered(it) }
 			true
 		}
 		R.id.action_select_all_items -> {
-			browseFilesFragment().selectAllItems()
+			browseFilesFragment()?.selectAllItems()
 			true
 		}
 		R.id.action_delete_items -> {
-			showConfirmDeleteNodeDialog(browseFilesFragment().selectedCloudNodes)
+			showConfirmDeleteNodeDialog(browseFilesFragment()?.selectedCloudNodes ?: emptyList())
 			true
 		}
 		R.id.action_move_items -> {
-			browseFilesPresenter.onMoveNodesClicked(
-				folder, //
-				browseFilesFragment().selectedCloudNodes as ArrayList<CloudNodeModel<*>>
-			)
+			val selected = (browseFilesFragment()?.selectedCloudNodes as? ArrayList<CloudNodeModel<*>>) ?: arrayListOf()
+			browseFilesPresenter.onMoveNodesClicked(folder, selected)
 			true
 		}
 		R.id.action_export_items -> {
-			browseFilesPresenter.onExportNodesClicked( //
-				browseFilesFragment().selectedCloudNodes as ArrayList<CloudNodeModel<*>>, //
-				BrowseFilesPresenter.EXPORT_TRIGGERED_BY_USER
-			)
+			val selectedExport = (browseFilesFragment()?.selectedCloudNodes as? ArrayList<CloudNodeModel<*>>) ?: arrayListOf()
+			browseFilesPresenter.onExportNodesClicked(selectedExport, BrowseFilesPresenter.EXPORT_TRIGGERED_BY_USER)
 			true
 		}
 		R.id.action_share_items -> {
-			browseFilesPresenter.onShareNodesClicked(browseFilesFragment().selectedCloudNodes)
+			browseFilesPresenter.onShareNodesClicked(browseFilesFragment()?.selectedCloudNodes ?: emptyList())
 			true
 		}
 		R.id.action_sort_az -> {
-			browseFilesFragment().setSort(CloudNodeModelNameAZComparator())
-			browseFilesPresenter.onRefreshTriggered(browseFilesFragment().folder)
+			browseFilesFragment()?.setSort(CloudNodeModelNameAZComparator())
+			browseFilesFragment()?.folder?.let { browseFilesPresenter.onRefreshTriggered(it) }
 			true
 		}
 		R.id.action_sort_za -> {
-			browseFilesFragment().setSort(CloudNodeModelNameZAComparator())
-			browseFilesPresenter.onRefreshTriggered(browseFilesFragment().folder)
+			browseFilesFragment()?.setSort(CloudNodeModelNameZAComparator())
+			browseFilesFragment()?.folder?.let { browseFilesPresenter.onRefreshTriggered(it) }
 			true
 		}
 		R.id.action_sort_newest -> {
-			browseFilesFragment().setSort(CloudNodeModelDateNewestFirstComparator())
-			browseFilesPresenter.onRefreshTriggered(browseFilesFragment().folder)
+			browseFilesFragment()?.setSort(CloudNodeModelDateNewestFirstComparator())
+			browseFilesFragment()?.folder?.let { browseFilesPresenter.onRefreshTriggered(it) }
 			true
 		}
 		R.id.action_sort_oldest -> {
-			browseFilesFragment().setSort(CloudNodeModelDateOldestFirstComparator())
-			browseFilesPresenter.onRefreshTriggered(browseFilesFragment().folder)
+			browseFilesFragment()?.setSort(CloudNodeModelDateOldestFirstComparator())
+			browseFilesFragment()?.folder?.let { browseFilesPresenter.onRefreshTriggered(it) }
 			true
 		}
 		R.id.action_sort_biggest -> {
-			browseFilesFragment().setSort(CloudNodeModelSizeBiggestFirstComparator())
-			browseFilesPresenter.onRefreshTriggered(browseFilesFragment().folder)
+			browseFilesFragment()?.setSort(CloudNodeModelSizeBiggestFirstComparator())
+			browseFilesFragment()?.folder?.let { browseFilesPresenter.onRefreshTriggered(it) }
 			true
 		}
 		R.id.action_sort_smallest -> {
-			browseFilesFragment().setSort(CloudNodeModelSizeSmallestFirstComparator())
-			browseFilesPresenter.onRefreshTriggered(browseFilesFragment().folder)
+			browseFilesFragment()?.setSort(CloudNodeModelSizeSmallestFirstComparator())
+			browseFilesFragment()?.folder?.let { browseFilesPresenter.onRefreshTriggered(it) }
 			true
 		}
 		android.R.id.home -> {
@@ -316,10 +325,10 @@ class BrowseFilesActivity : BaseActivity<ActivityLayoutBinding>(ActivityLayoutBi
 		showDialog(UploadCloudFileDialog.newInstance(uploadingFiles))
 	}
 
-	override fun renderedCloudNodes(): List<CloudNodeModel<*>> = browseFilesFragment().renderedCloudNodes()
+	override fun renderedCloudNodes(): List<CloudNodeModel<*>> = browseFilesFragment()?.renderedCloudNodes() ?: emptyList()
 
 	override fun onCreateFolderClick(folderName: String) {
-		browseFilesPresenter.onCreateFolderPressed(browseFilesFragment().folder, folderName)
+		browseFilesFragment()?.let { browseFilesPresenter.onCreateFolderPressed(it.folder, folderName) }
 	}
 
 	override fun onExportFileClicked(cloudFile: CloudFileModel) {
@@ -335,7 +344,7 @@ class BrowseFilesActivity : BaseActivity<ActivityLayoutBinding>(ActivityLayoutBi
 	}
 
 	private fun currentFolderPath(): String {
-		val currentFolder = browseFilesFragment().folder
+		val currentFolder = browseFilesFragment()?.folder ?: return binding.root.context.getString(org.cryptomator.presentation.R.string.screen_file_browser_default_title)
 		return currentFolder.vault()?.let { it.path + currentFolder.path } ?: currentFolder.path
 	}
 
@@ -345,6 +354,10 @@ class BrowseFilesActivity : BaseActivity<ActivityLayoutBinding>(ActivityLayoutBi
 
 	override fun onReplaceNegativeClicked() {
 		browseFilesPresenter.uploadFilesAndSkipExistingFiles()
+	}
+
+	override fun onReplaceAskEachClicked() {
+		browseFilesPresenter.onReplaceAskEachClicked()
 	}
 
 	override fun onShareFolderClicked(cloudFolderModel: CloudFolderModel) {
@@ -357,6 +370,19 @@ class BrowseFilesActivity : BaseActivity<ActivityLayoutBinding>(ActivityLayoutBi
 
 	override fun onReplaceCanceled() {
 		showProgress(COMPLETED)
+	}
+
+	// Per-file conflict dialog callbacks
+	override fun onPerFileConflictReplace(fileName: String) {
+		browseFilesPresenter.onPerFileConflictReplace(fileName)
+	}
+
+	override fun onPerFileConflictSkip(fileName: String) {
+		browseFilesPresenter.onPerFileConflictSkip(fileName)
+	}
+
+	override fun onPerFileConflictCancelBatch() {
+		browseFilesPresenter.onPerFileConflictCancelBatch()
 	}
 
 	override fun showNodeSettingsDialog(node: CloudNodeModel<*>) {
@@ -417,7 +443,7 @@ class BrowseFilesActivity : BaseActivity<ActivityLayoutBinding>(ActivityLayoutBi
 	}
 
 	private fun triggerNavigationModeChanged() {
-		navigationMode?.let { browseFilesFragment().navigationModeChanged(it) }
+		navigationMode?.let { browseFilesFragment()?.navigationModeChanged(it) }
 	}
 
 	override fun navigateTo(folder: CloudFolderModel) {
@@ -431,8 +457,7 @@ class BrowseFilesActivity : BaseActivity<ActivityLayoutBinding>(ActivityLayoutBi
 	}
 
 	override fun showAddContentDialog() {
-		VaultContentActionBottomSheet.newInstance(browseFilesFragment().folder)
-			.show(supportFragmentManager, "AddContentDialog")
+		browseFilesFragment()?.let { VaultContentActionBottomSheet.newInstance(it.folder).show(supportFragmentManager, "AddContentDialog") }
 	}
 
 	override fun updateTitle(folder: CloudFolderModel) {
@@ -440,7 +465,7 @@ class BrowseFilesActivity : BaseActivity<ActivityLayoutBinding>(ActivityLayoutBi
 	}
 
 	override fun hasExcludedFolder(): Boolean {
-		browseFilesFragment().renderedCloudNodes().forEach { cloudNodeModel ->
+		browseFilesFragment()?.renderedCloudNodes()?.forEach { cloudNodeModel ->
 			browseFilesIntent.chooseCloudNodeSettings().excludeFolderContainingNames.forEach { name ->
 				if (Pattern.compile(Pattern.quote(name)).matcher(cloudNodeModel.name).matches()) {
 					return true
@@ -451,11 +476,11 @@ class BrowseFilesActivity : BaseActivity<ActivityLayoutBinding>(ActivityLayoutBi
 	}
 
 	override fun showCloudNodes(nodes: List<CloudNodeModel<*>>) {
-		browseFilesFragment().show(nodes)
+		browseFilesFragment()?.show(nodes) ?: Timber.w("BrowseFilesFragment not attached — skipping showCloudNodes")
 	}
 
 	override fun addOrUpdateCloudNode(node: CloudNodeModel<*>) {
-		browseFilesFragment().addOrUpdate(node)
+		browseFilesFragment()?.addOrUpdate(node)
 	}
 
 	override fun onCreateNewFolderClicked() {
@@ -468,6 +493,10 @@ class BrowseFilesActivity : BaseActivity<ActivityLayoutBinding>(ActivityLayoutBi
 
 	override fun onUploadFilesClicked(folder: CloudFolderModel) {
 		browseFilesPresenter.onUploadFilesClicked(folder)
+	}
+
+	override fun onUploadFolderClicked(folder: CloudFolderModel) {
+		browseFilesPresenter.onUploadFolderClicked(folder)
 	}
 
 	override fun onCreateNewTextFileClicked() {
@@ -526,37 +555,37 @@ class BrowseFilesActivity : BaseActivity<ActivityLayoutBinding>(ActivityLayoutBi
 	}
 
 	override fun deleteCloudNodesFromAdapter(nodes: List<CloudNodeModel<*>>) {
-		browseFilesFragment().remove(nodes)
+		browseFilesFragment()?.remove(nodes)
 	}
 
 	override fun replaceRenamedCloudNode(node: CloudNodeModel<out CloudNode>) {
-		browseFilesFragment().replaceRenamedCloudFile(node)
+		browseFilesFragment()?.replaceRenamedCloudFile(node)
 	}
 
 	override fun showProgress(node: CloudNodeModel<*>, progress: ProgressModel) {
-		browseFilesFragment().showProgress(node, progress)
+		browseFilesFragment()?.showProgress(node, progress)
 	}
 
 	override fun showProgress(nodes: List<CloudNodeModel<*>>, progress: ProgressModel) {
-		browseFilesFragment().showProgress(nodes, progress)
+		browseFilesFragment()?.showProgress(nodes, progress)
 	}
 
 	override fun hideProgress(node: CloudNodeModel<*>) {
-		browseFilesFragment().hideProgress(node)
+		browseFilesFragment()?.hideProgress(node)
 	}
 
 	override fun hideProgress(nodes: List<CloudNodeModel<*>>) {
-		browseFilesFragment().hideProgress(nodes)
+		browseFilesFragment()?.hideProgress(nodes)
 	}
 
 	override fun showLoading(loading: Boolean) {
-		browseFilesFragment().showLoading(loading)
+		browseFilesFragment()?.showLoading(loading)
 	}
 
-	private fun browseFilesFragment(): BrowseFilesFragment = getCurrentFragment(R.id.fragment_container) as BrowseFilesFragment
+	private fun browseFilesFragment(): BrowseFilesFragment? = getCurrentFragment(R.id.fragment_container) as? BrowseFilesFragment
 
 	override fun onCreateNewTextFileClicked(fileName: String) {
-		browseFilesPresenter.onCreateNewTextFileClicked(browseFilesFragment().folder, fileName)
+		browseFilesFragment()?.folder?.let { browseFilesPresenter.onCreateNewTextFileClicked(it, fileName) }
 	}
 
 	override fun onDeleteCloudNodeConfirmed(nodes: List<CloudNodeModel<*>>) {
@@ -568,6 +597,8 @@ class BrowseFilesActivity : BaseActivity<ActivityLayoutBinding>(ActivityLayoutBi
 
 	override fun onUploadCanceled() {
 		browseFilesPresenter.onUploadCanceled()
+		// Close any running progress dialog immediately on user cancel.
+		showProgress(ProgressModel.COMPLETED)
 	}
 
 	override fun onQueryTextSubmit(query: String?): Boolean {
@@ -584,8 +615,8 @@ class BrowseFilesActivity : BaseActivity<ActivityLayoutBinding>(ActivityLayoutBi
 
 	private fun updateFilter(query: String?) {
 		showLoading(true)
-		browseFilesFragment().setFilterText(query.orEmpty())
-		browseFilesPresenter.onFolderReloadContent(folder)
+		browseFilesFragment()?.setFilterText(query.orEmpty())
+		browseFilesFragment()?.folder?.let { browseFilesPresenter.onFolderReloadContent(it) }
 	}
 
 	override fun onClose(): Boolean {
@@ -602,7 +633,7 @@ class BrowseFilesActivity : BaseActivity<ActivityLayoutBinding>(ActivityLayoutBi
 	}
 
 	override fun updateActiveFolderDueToAuthenticationProblem(folder: CloudFolderModel) {
-		browseFilesFragment().folder = folder
+		browseFilesFragment()?.let { it.folder = folder }
 	}
 
 	override fun navigateFolderBackBecauseSymlink() {

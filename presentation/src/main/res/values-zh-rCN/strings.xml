@@ -90,7 +90,22 @@
 	<string name="screen_file_browser_action_create_folder">新建文件夹</string>
 	<string name="screen_file_browser_action_create_new_text_file">新建文本文件</string>
 	<string name="screen_file_browser_action_upload_files">上传文件</string>
+	<string name="screen_file_browser_action_upload_folder">上传文件夹</string>
 	<string name="screen_file_browser_upload_files_chooser_title">文件</string>
+
+	<!-- 单个冲突对话框 -->
+	<string name="dialog_per_file_conflict_title">文件已存在</string>
+	<string name="dialog_per_file_conflict_message">文件已存在：%1$s</string>
+	<string name="dialog_per_file_conflict_replace">替换</string>
+	<string name="dialog_per_file_conflict_skip">跳过</string>
+	<string name="dialog_per_file_conflict_cancel_batch">取消所有</string>
+
+	<!-- 文件夹冲突对话框中立按钮 -->
+	<string name="dialog_replace_neutral_button_ask_each">逐个询问</string>
+
+	<!-- 上传文件夹选项：保留所选根目录名 -->
+	<string name="dialog_upload_folder_options_title">上传文件夹</string>
+	<string name="dialog_upload_folder_preserve_root">保留根目录</string>
 	<string name="screen_file_browser_msg_file_exported">文件已导出</string>
 	<string name="screen_file_browser_msg_files_exported">文件已导出</string>
 	<string name="screen_file_browser_nothing_to_export">没有要导出的内容</string>

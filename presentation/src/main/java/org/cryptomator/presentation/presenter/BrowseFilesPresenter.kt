@@ -5,7 +5,12 @@ import android.content.Intent
 import android.net.Uri
 import android.provider.DocumentsContract
 import android.widget.Toast
+import android.os.Handler
+import android.os.Looper
 import androidx.core.net.toFile
+import androidx.documentfile.provider.DocumentFile
+import androidx.appcompat.app.AlertDialog
+import org.cryptomator.presentation.ui.dialog.PerFileConflictDialog
 import org.cryptomator.data.cloud.crypto.CryptoFolder
 import org.cryptomator.domain.Cloud
 import org.cryptomator.domain.CloudFile
@@ -17,6 +22,7 @@ import org.cryptomator.domain.exception.CloudNodeAlreadyExistsException
 import org.cryptomator.domain.exception.EmptyDirFileException
 import org.cryptomator.domain.exception.FatalBackendException
 import org.cryptomator.domain.exception.NoDirFileException
+import org.cryptomator.domain.exception.ParentFolderDoesNotExistException
 import org.cryptomator.domain.exception.SymLinkException
 import org.cryptomator.domain.usecases.CalculateFileHashUseCase
 import org.cryptomator.domain.usecases.CloudFolderRecursiveListing
@@ -137,6 +143,19 @@ class BrowseFilesPresenter @Inject constructor( //
 
 	@InjectIntent
 	lateinit var intent: BrowseFilesIntent
+
+	// State for per-file conflict loop when uploading a folder
+	private data class ConflictItem(val name: String, val uri: Uri)
+	private var perFileConflicts: MutableList<ConflictItem> = mutableListOf()
+	private var perFileIndex: Int = 0
+	private var perFileChosenUploads: MutableList<UploadFile> = mutableListOf()
+	private var perFileNonConflicting: List<UploadFile> = emptyList()
+	private lateinit var perFileTargetFolder: CloudFolder
+	private var perFileDirIndex: Int = 0
+	private var perFileContinue: (() -> Unit)? = null
+	private var perFileActive: Boolean = false
+
+	private var suppressPerFileUi: Boolean = false
 
 	@JvmField
 	@InstanceState
@@ -499,7 +518,8 @@ class BrowseFilesPresenter @Inject constructor( //
 			.withCloudNodes(cloudNodeModelMapper.fromModels(nodes)) //
 			.run(object : DefaultResultHandler<List<CloudNode>>() {
 				override fun onSuccess(cloudNodes: List<CloudNode>) {
-					view?.deleteCloudNodesFromAdapter(cloudNodeModelMapper.toModels(cloudNodes))
+					val deleted = cloudNodeModelMapper.toModels(cloudNodes)
+					view?.deleteCloudNodesFromAdapter(deleted)
 				}
 			})
 	}
@@ -878,6 +898,25 @@ class BrowseFilesPresenter @Inject constructor( //
 		filesForUpload.keys.removeAll(existingFilesForUpload.keys)
 	}
 
+	fun onReplaceAskEachClicked() {
+		val parent = uploadLocation?.toCloudNode() ?: return
+		// Build non-conflicting and conflict lists from current maps
+		val nonConflicting = filesForUpload.filterKeys { !existingFilesForUpload.containsKey(it) }.values.toList()
+		perFileNonConflicting = nonConflicting
+		perFileTargetFolder = parent
+		perFileChosenUploads = mutableListOf()
+		perFileConflicts = existingFilesForUpload.keys.map { name -> ConflictItem(name, Uri.EMPTY) }.toMutableList()
+		perFileIndex = 0
+		perFileContinue = { onFileUploadCompleted() }
+		perFileActive = true
+		if (perFileConflicts.isNotEmpty()) {
+			view?.showDialog(PerFileConflictDialog.newInstance(perFileConflicts[0].name))
+		} else {
+			// No conflicts anymore
+			uploadFiles(nonConflicting)
+		}
+	}
+
 	fun onFolderChosen(chosenFolder: CloudFolderModel?) {
 		if (view?.hasExcludedFolder() == true) {
 			view?.showMessage(context().getString(R.string.error_file_or_folder_exists))
@@ -1040,6 +1079,94 @@ class BrowseFilesPresenter @Inject constructor( //
 		requestActivityResult(ActivityResultCallbacks.selectedFiles(), intent)
 	}
 
+	fun onUploadFolderClicked(folder: CloudFolderModel) {
+		uploadLocation = folder
+		val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE)
+		intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+		requestActivityResult(ActivityResultCallbacks.selectedFolderTree(), intent)
+	}
+
+	// Callbacks from per-file conflict dialog shown during folder upload
+	fun onPerFileConflictReplace(fileName: String) {
+		if (!perFileActive || perFileIndex >= perFileConflicts.size) return
+		val current = perFileConflicts[perFileIndex]
+		if (current.name == fileName) {
+			// For folder uploads, we have a concrete Uri. For normal uploads, we reuse the prepared UploadFile.
+			if (current.uri != Uri.EMPTY) {
+				perFileChosenUploads.add(createUploadFile(current.name, current.uri, true))
+			} else {
+				existingFilesForUpload[current.name]?.let { perFileChosenUploads.add(it) }
+			}
+			perFileIndex++
+			continuePerFileFlow()
+		}
+	}
+
+	fun onPerFileConflictSkip(fileName: String) {
+		if (!perFileActive || perFileIndex >= perFileConflicts.size) return
+		val current = perFileConflicts[perFileIndex]
+		if (current.name == fileName) {
+			perFileIndex++
+			continuePerFileFlow()
+		}
+	}
+
+	fun onPerFileConflictCancelBatch() {
+		perFileActive = false
+		perFileContinue = null
+		view?.showProgress(ProgressModel.COMPLETED)
+	}
+
+	private fun continuePerFileFlow() {
+		if (!perFileActive) return
+		if (perFileIndex < perFileConflicts.size) {
+			view?.showDialog(PerFileConflictDialog.newInstance(perFileConflicts[perFileIndex].name))
+		} else {
+			// Finish this directory: upload chosen replacements + non-conflicting
+			val toUpload = perFileNonConflicting + perFileChosenUploads
+			val runUpload = {
+				uploadFilesUseCase
+					.withParent(perFileTargetFolder)
+					.andFiles(toUpload)
+					.run(object : DefaultProgressAwareResultHandler<List<CloudFile>, UploadState>() {
+						override fun onProgress(progress: Progress<UploadState>) {
+							view?.showProgress(progressModelMapper.toModel(progress))
+						}
+
+						override fun onSuccess(files: List<CloudFile>) {
+							if (!suppressPerFileUi) {
+								files.forEach { file -> view?.addOrUpdateCloudNode(cloudFileModelMapper.toModel(file)) }
+							}
+							val cont = perFileContinue
+							perFileActive = false
+							perFileContinue = null
+							suppressPerFileUi = false
+							perFileChosenUploads.clear()
+							perFileConflicts.clear()
+							cont?.invoke()
+						}
+
+						override fun onError(e: Throwable) {
+							super.onError(e)
+							val cont = perFileContinue
+							perFileActive = false
+							perFileContinue = null
+							suppressPerFileUi = false
+							perFileChosenUploads.clear()
+							perFileConflicts.clear()
+							cont?.invoke()
+						}
+					})
+			}
+			val currentFolder = try { uploadLocation?.toCloudNode() } catch (_: Exception) { null }
+			if (currentFolder != null && perFileTargetFolder != currentFolder) {
+				Handler(Looper.getMainLooper()).postDelayed({ runUpload() }, FOLDER_ENSURE_STABILIZE_DELAY_MS)
+			} else {
+				runUpload()
+			}
+		}
+	}
+
 	fun onUploadCanceled() {
 		uploadFilesUseCase.cancel()
 	}
@@ -1048,6 +1175,331 @@ class BrowseFilesPresenter @Inject constructor( //
 	fun selectedFiles(result: ActivityResult) {
 		val fileUris = getFileUrisFromIntent(result.intent())
 		prepareSelectedFilesForUpload(fileUris)
+	}
+
+	@Callback
+	fun selectedFolderTree(result: ActivityResult) {
+		val rootUri = result.intent().data ?: return
+		val root = DocumentFile.fromTreeUri(context(), rootUri) ?: return
+		data class FileItem(val relDir: String, val name: String, val uri: Uri)
+		val items = ArrayList<FileItem>()
+		fun walk(dir: DocumentFile, currentRel: String) {
+			dir.listFiles().forEach { child ->
+				val name = child.name ?: return@forEach
+				if (child.isFile) {
+					items.add(FileItem(currentRel, name, child.uri))
+				} else if (child.isDirectory) {
+					val nextRel = if (currentRel.isEmpty()) name else "$currentRel/$name"
+					walk(child, nextRel)
+				}
+			}
+		}
+		walk(root, "")
+		Timber.tag("FolderUpload").i("selectedFolderTree: root='%s' items=%d", root.name, items.size)
+		if (items.isEmpty()) {
+			Timber.tag("FolderUpload").i("selectedFolderTree: no files found, aborting")
+			return
+		}
+
+		val parentModel = uploadLocation ?: return
+		val parentFolder = parentModel.toCloudNode()
+		var preserveRoot = false
+
+		fun startPipeline() {
+			Timber.tag("FolderUpload").e("========================================")
+			Timber.tag("FolderUpload").e(">>> START PIPELINE: totalFiles=%d", items.size)
+			Timber.tag("FolderUpload").e("========================================")
+			view?.showUploadDialog(items.size)
+			val grouped = items.groupBy { it.relDir }
+			val dirs = grouped.keys.toMutableList()
+			dirs.sortWith(compareBy({ it.split('/').filter { s -> s.isNotEmpty() }.size }, { it }))
+
+			Timber.tag("FolderUpload").e(">>> Total directories to process: %d", dirs.size)
+			Timber.tag("FolderUpload").e(">>> Directory list: %s", dirs)
+
+			val baseFolderName = root.name ?: "Uploaded"
+
+			// batch state for conflict handling across callbacks
+			var currentIndex = 0
+			lateinit var pendingTargetFolder: CloudFolder
+			var pendingUploads: List<UploadFile> = emptyList()
+			var pendingConflicts: List<FileItem> = emptyList()
+			var updateCurrentView: Boolean = false
+			var currentRelPathForRetry: String = ""
+			// Track active upload tasks to properly close dialog only when all are complete
+			var activeUploadCount = 0
+
+			fun backoffDelayForAttempt(attempt: Int): Long = when (attempt) {
+				0 -> FOLDER_ENSURE_STABILIZE_DELAY_MS
+				1 -> 1200L
+				else -> 2500L
+			}
+
+			fun uploadCurrentDirUploads(attempt: Int = 0, onDone: () -> Unit) {
+				activeUploadCount++
+				Timber.tag("FolderUpload").e(">>> uploadCurrentDirUploads START: attempt=%d target='%s' fileCount=%d activeCount=%d (AFTER ++)", attempt, try { pendingTargetFolder.name } catch (e: Exception) { "?" }, pendingUploads.size, activeUploadCount)
+
+				uploadFilesUseCase
+					.withParent(pendingTargetFolder)
+					.andFiles(pendingUploads)
+					.run(object : DefaultProgressAwareResultHandler<List<CloudFile>, UploadState>() {
+						override fun onProgress(progress: Progress<UploadState>) {
+							// In multi-batch folder upload, suppress batch completion progress updates (state=null, complete=true)
+							// Only show COMPLETED when the entire pipeline finishes
+							if (progress.isOverallComplete()) {
+								// Don't send this progress update - it would close the dialog prematurely
+								return
+							}
+							view?.showProgress(progressModelMapper.toModel(progress))
+						}
+
+						override fun onSuccess(files: List<CloudFile>) {
+							activeUploadCount--
+							Timber.tag("FolderUpload").e(">>> uploadCurrentDirUploads SUCCESS: target='%s' uploaded %d files, activeCount=%d (AFTER --)", try { pendingTargetFolder.name } catch (e: Exception) { "?" }, files.size, activeUploadCount)
+							if (updateCurrentView) {
+								files.forEach { file -> view?.addOrUpdateCloudNode(cloudFileModelMapper.toModel(file)) }
+							}
+							onDone()
+						}
+
+						override fun onError(e: Throwable) {
+							Timber.tag("FolderUpload").e(e, ">>> uploadCurrentDirUploads ERROR: attempt=%d rel='%s' activeCount=%d", attempt, currentRelPathForRetry, activeUploadCount)
+							if (ExceptionUtil.contains(e, ParentFolderDoesNotExistException::class.java) && currentRelPathForRetry.isNotEmpty() && attempt < MAX_PARENT_MISSING_RETRIES) {
+								val nextAttempt = attempt + 1
+								val delay = backoffDelayForAttempt(nextAttempt)
+								Timber.tag("FolderUpload").e(">>> Will RETRY: ensuring '%s' then retry with delay=%dms (attempt %d)", currentRelPathForRetry, delay, nextAttempt)
+								activeUploadCount--
+								ensureFolderPath(parentFolder, currentRelPathForRetry) { ensured ->
+									pendingTargetFolder = ensured
+									Handler(Looper.getMainLooper()).postDelayed({
+										uploadCurrentDirUploads(nextAttempt, onDone)
+									}, delay)
+								}
+							} else {
+								activeUploadCount--
+								super.onError(e)
+								onDone()
+							}
+						}
+					})
+			}
+
+			fun beginPerFileAsk(conflicts: List<FileItem>, nonConflicting: List<UploadFile>, target: CloudFolder, dirIdx: Int, done: () -> Unit) {
+				suppressPerFileUi = true
+				perFileConflicts = conflicts.map { ConflictItem(it.name, it.uri) }.toMutableList()
+				perFileNonConflicting = nonConflicting
+				perFileTargetFolder = target
+				perFileDirIndex = dirIdx
+				perFileIndex = 0
+				perFileChosenUploads = mutableListOf()
+				perFileContinue = done
+				perFileActive = true
+				Timber.tag("FolderUpload").i("beginPerFileAsk: dirIdx=%d target='%s' conflicts=%d nonConflicting=%d", dirIdx, try { target.name } catch (e: Exception) { "?" }, conflicts.size, nonConflicting.size)
+				view?.showDialog(PerFileConflictDialog.newInstance(perFileConflicts[perFileIndex].name))
+			}
+
+			fun showFolderConflictDialog(existingNames: List<String>, total: Int, onReplaceAll: () -> Unit, onSkipAll: () -> Unit, onAskEach: () -> Unit) {
+				Timber.tag("FolderUpload").i("conflictDialog: conflicts=%d total=%d", existingNames.size, total)
+				val title = if (existingNames.size == 1) context().getString(R.string.dialog_replace_title_single_file_exists) else context().getString(R.string.dialog_replace_title_multiple_files_exist)
+				val message = when (existingNames.size) {
+					1 -> String.format(context().getString(R.string.dialog_replace_msg_single_file_exists), existingNames[0])
+					total -> context().getString(R.string.dialog_replace_msg_all_files_exists)
+					else -> String.format(context().getString(R.string.dialog_replace_msg_some_files_exists), existingNames.size)
+				}
+				val replaceLabel = when (existingNames.size) {
+					1 -> context().getString(R.string.dialog_replace_positive_button_single_file_exists)
+					total -> context().getString(R.string.dialog_replace_positive_button_all_files_exist)
+					else -> context().getString(R.string.dialog_replace_positive_button_some_files_exist)
+				}
+				val skipLabel = context().getString(R.string.dialog_replace_negative_button_at_least_two_but_not_all_files_exist)
+				val askEachLabel = context().getString(R.string.dialog_replace_neutral_button_ask_each)
+				AlertDialog.Builder(activity())
+					.setTitle(title)
+					.setMessage(message)
+					.setPositiveButton(replaceLabel) { _, _ -> onReplaceAll() }
+					.setNegativeButton(skipLabel) { _, _ -> onSkipAll() }
+					.setNeutralButton(askEachLabel) { _, _ -> onAskEach() }
+					.setOnCancelListener { view?.showProgress(ProgressModel.COMPLETED) }
+					.show()
+			}
+
+			fun processNextDir(index: Int) {
+				Timber.tag("FolderUpload").e("========================================")
+				Timber.tag("FolderUpload").e(">>> processNextDir: index=%d/%d activeUploadCount=%d", index, dirs.size, activeUploadCount)
+				Timber.tag("FolderUpload").e("========================================")
+				if (index >= dirs.size) {
+					// All directory iterations complete, but uploads may still be active
+					Timber.tag("FolderUpload").e(">>> PIPELINE DONE: index >= dirs.size, activeUploadCount=%d", activeUploadCount)
+
+					// Wait for all active uploads to complete before closing dialog
+					fun checkAndFinalize() {
+						if (activeUploadCount <= 0) {
+							Timber.tag("FolderUpload").e(">>> ALL UPLOADS COMPLETE! Closing dialog")
+							view?.showProgress(ProgressModel.COMPLETED)
+							uploadLocation = null
+							view?.showLoading(true)
+							getCloudList(parentModel)
+						} else {
+							// Check again after a short delay
+							Handler(Looper.getMainLooper()).postDelayed({ checkAndFinalize() }, 200L)
+						}
+					}
+
+					checkAndFinalize()
+					return
+				}
+				val relDir = dirs[index]
+				val effectiveRelDir = when {
+					preserveRoot && relDir.isEmpty() -> baseFolderName
+					preserveRoot && relDir.isNotEmpty() -> "$baseFolderName/$relDir"
+					else -> relDir
+				}
+				Timber.tag("FolderUpload").i("preserveRoot=%s relDir='%s' => effectiveRelDir='%s'", preserveRoot, relDir, effectiveRelDir)
+				currentRelPathForRetry = effectiveRelDir
+				// Only update current view if we upload directly into the currently displayed folder
+				updateCurrentView = effectiveRelDir.isEmpty()
+				if (effectiveRelDir.isEmpty()) {
+					val targetFolder = parentFolder
+					Timber.tag("FolderUpload").d("processing relDir='%s' as current folder (no ensure)", relDir)
+					getCloudListUseCase
+						.withFolder(targetFolder)
+						.run(object : DefaultResultHandler<List<CloudNode>>() {
+							override fun onSuccess(nodes: List<CloudNode>) {
+								val existing = nodes.filterIsInstance<CloudFile>().map { it.name }.toSet()
+								val allUploads = grouped[relDir]!!.map { FileItem(relDir, it.name, it.uri) }
+								val nonConflicting = allUploads.filter { !existing.contains(it.name) }.map { createUploadFile(it.name, it.uri, false) }
+								val conflicts = allUploads.filter { existing.contains(it.name) }
+								Timber.tag("FolderUpload").d("dir='%s' existing=%d nonConflicting=%d conflicts=%d", relDir, existing.size, nonConflicting.size, conflicts.size)
+
+								pendingTargetFolder = targetFolder
+								pendingUploads = nonConflicting
+								pendingConflicts = conflicts
+
+								fun scheduleUpload() {
+									if (effectiveRelDir.isEmpty()) {
+										uploadCurrentDirUploads(0) {
+											processNextDir(index + 1)
+										}
+									} else {
+										Handler(Looper.getMainLooper()).postDelayed({
+											uploadCurrentDirUploads(0) {
+												processNextDir(index + 1)
+											}
+										}, FOLDER_ENSURE_STABILIZE_DELAY_MS)
+									}
+								}
+
+								if (conflicts.isEmpty()) {
+									scheduleUpload()
+								} else {
+									showFolderConflictDialog(conflicts.map { it.name }, allUploads.size,
+										onReplaceAll = {
+										pendingUploads = nonConflicting + conflicts.map { createUploadFile(it.name, it.uri, true) }
+										scheduleUpload()
+									},
+										onSkipAll = {
+										scheduleUpload()
+									},
+										onAskEach = {
+										beginPerFileAsk(conflicts, nonConflicting, targetFolder, index) { processNextDir(index + 1) }
+									}
+									)
+								}
+							}
+						})
+				} else {
+					ensureFolderPath(parentFolder, effectiveRelDir) { targetFolder ->
+						Timber.tag("FolderUpload").d("processing relDir='%s' ensured path='%s'", relDir, effectiveRelDir)
+						getCloudListUseCase
+							.withFolder(targetFolder)
+							.run(object : DefaultResultHandler<List<CloudNode>>() {
+								override fun onSuccess(nodes: List<CloudNode>) {
+									val existing = nodes.filterIsInstance<CloudFile>().map { it.name }.toSet()
+									val allUploads = grouped[relDir]!!.map { FileItem(relDir, it.name, it.uri) }
+									val nonConflicting = allUploads.filter { !existing.contains(it.name) }.map { createUploadFile(it.name, it.uri, false) }
+									val conflicts = allUploads.filter { existing.contains(it.name) }
+									Timber.tag("FolderUpload").d("dir='%s' existing=%d nonConflicting=%d conflicts=%d (ensured)", relDir, existing.size, nonConflicting.size, conflicts.size)
+
+									pendingTargetFolder = targetFolder
+									pendingUploads = nonConflicting
+									pendingConflicts = conflicts
+
+									fun scheduleUploadEnsured() {
+										// For ensured (non-empty) paths, always delay slightly
+										Handler(Looper.getMainLooper()).postDelayed({
+											uploadCurrentDirUploads(0) {
+												processNextDir(index + 1)
+											}
+										}, FOLDER_ENSURE_STABILIZE_DELAY_MS)
+									}
+
+									if (conflicts.isEmpty()) {
+										scheduleUploadEnsured()
+									} else {
+										showFolderConflictDialog(conflicts.map { it.name }, allUploads.size,
+											onReplaceAll = {
+											pendingUploads = nonConflicting + conflicts.map { createUploadFile(it.name, it.uri, true) }
+											scheduleUploadEnsured()
+										},
+											onSkipAll = {
+											scheduleUploadEnsured()
+										},
+											onAskEach = {
+											beginPerFileAsk(conflicts, nonConflicting, targetFolder, index) { processNextDir(index + 1) }
+										}
+										)
+									}
+								}
+							})
+					}
+				}
+			}
+
+			processNextDir(0)
+		}
+
+		AlertDialog.Builder(activity())
+			.setTitle(R.string.dialog_upload_folder_options_title)
+			.setMultiChoiceItems(arrayOf(getString(R.string.dialog_upload_folder_preserve_root)), booleanArrayOf(false)) { _, _, isChecked ->
+				preserveRoot = isChecked
+				Timber.tag("FolderUpload").i("preserveRoot toggled -> %s", preserveRoot)
+			}
+			.setPositiveButton(android.R.string.ok) { _, _ -> startPipeline() }
+			.setOnCancelListener { view?.showProgress(ProgressModel.COMPLETED) }
+			.show()
+	}
+
+	private fun ensureFolderPath(parent: CloudFolder, relativePath: String, onSuccess: (CloudFolder) -> Unit) {
+		val comps = relativePath.split('/').filter { it.isNotEmpty() }
+		fun step(current: CloudFolder, idx: Int) {
+			if (idx >= comps.size) {
+				onSuccess(current)
+				return
+			}
+			val name = comps[idx]
+			getCloudListUseCase
+				.withFolder(current)
+				.run(object : DefaultResultHandler<List<CloudNode>>() {
+					override fun onSuccess(nodes: List<CloudNode>) {
+						val existing = nodes.firstOrNull { it is CloudFolder && it.name == name } as CloudFolder?
+						if (existing != null) {
+							Timber.tag("FolderUpload").d("ensureFolderPath: reuse '%s' under '%s'", name, current.name)
+							step(existing, idx + 1)
+						} else {
+							createFolderUseCase
+								.withParent(current)
+								.andFolderName(name)
+								.run(object : DefaultResultHandler<CloudFolder>() {
+									override fun onSuccess(newFolder: CloudFolder) {
+										Timber.tag("FolderUpload").i("ensureFolderPath: created '%s' under '%s'", name, current.name)
+										step(newFolder, idx + 1)
+									}
+								})
+						}
+					}
+				})
+		}
+		step(parent, 0)
 	}
 
 	private fun getFileUrisFromIntent(intent: Intent): List<Uri> {
@@ -1264,6 +1716,8 @@ class BrowseFilesPresenter @Inject constructor( //
 	companion object {
 
 		const val OPEN_FILE_FINISHED = 12
+		const val FOLDER_ENSURE_STABILIZE_DELAY_MS = 450L
+		const val MAX_PARENT_MISSING_RETRIES = 2
 
 		val EXPORT_AFTER_APP_CHOOSER: ExportOperation = object : ExportOperation {
 			override fun export(presenter: BrowseFilesPresenter, downloadFiles: List<DownloadFile>) {

@@ -130,7 +130,22 @@
 	<string name="screen_file_browser_action_create_folder">Create folder</string>
 	<string name="screen_file_browser_action_create_new_text_file">Create text file</string>
 	<string name="screen_file_browser_action_upload_files">Upload files</string>
+	<string name="screen_file_browser_action_upload_folder">Upload folder</string>
 	<string name="screen_file_browser_upload_files_chooser_title">Files</string>
+
+	<!-- Per-file conflict dialog -->
+	<string name="dialog_per_file_conflict_title">File already exists</string>
+	<string name="dialog_per_file_conflict_message">File already exists: %1$s</string>
+	<string name="dialog_per_file_conflict_replace">Replace</string>
+	<string name="dialog_per_file_conflict_skip">Skip</string>
+	<string name="dialog_per_file_conflict_cancel_batch">Cancel all</string>
+
+	<!-- Folder conflict dialog neutral button -->
+	<string name="dialog_replace_neutral_button_ask_each">Ask each</string>
+
+	<!-- Upload folder option: preserve selected root directory name -->
+	<string name="dialog_upload_folder_options_title">Upload folder</string>
+	<string name="dialog_upload_folder_preserve_root">Preserve root folder</string>
 
 	<string name="screen_file_browser_msg_file_exported">File exported</string>
 	<string name="screen_file_browser_msg_files_exported">Files exported</string>

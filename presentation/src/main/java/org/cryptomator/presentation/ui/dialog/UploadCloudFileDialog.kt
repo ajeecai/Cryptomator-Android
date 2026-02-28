@@ -36,6 +36,8 @@ class UploadCloudFileDialog : BaseProgressErrorDialog<UploadCloudFileDialog.Call
 			cancelButton.setOnClickListener {
 				callback?.onUploadCanceled()
 				cancelButton.isEnabled = false
+				// Close the dialog immediately after cancel to reflect user action.
+				dismissAllowingStateLoss()
 			}
 		}
 	}
@@ -62,6 +64,13 @@ class UploadCloudFileDialog : BaseProgressErrorDialog<UploadCloudFileDialog.Call
 			if (progress.state().imageResourceId() != 0) {
 				binding.llDialogIntermediateProgress.ivProgressIcon.setImageDrawable(ResourceHelper.getDrawable(progress.state().imageResourceId()))
 			}
+			// Compute overall progress across all files instead of per-file only.
+			val total = numberOfUploadedFiles().coerceAtLeast(1)
+			val perFilePercent = progress.progress().coerceIn(0, 100)
+			// numberOfFileCurrentlyUploaded counts fully completed files so far.
+			val completedFiles = numberOfFileCurrentlyUploaded.coerceAtLeast(0)
+			val overall = (((completedFiles * 100) + perFilePercent).toFloat() / total).toInt().coerceIn(0, 100)
+			binding.llDialogIntermediateProgress.pbDialog.progress = overall
 		}
 	}
 

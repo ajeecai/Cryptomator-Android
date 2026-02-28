@@ -57,6 +57,13 @@ class SharedFilesPresenter @Inject constructor( //
 	private val filesForUpload: MutableSet<UploadFile> = HashSet()
 	private val existingFilesForUpload: MutableSet<UploadFile> = HashSet()
 
+	// Per-file ask-each state for shared uploads
+	private var askEachActive = false
+	private var askEachIndex = 0
+	private lateinit var askEachConflicts: MutableList<UploadFile>
+	private lateinit var askEachNonConflicting: MutableList<UploadFile>
+	private lateinit var askEachChosen: MutableList<UploadFile>
+
 	@JvmField
 	@InstanceState
 	var selectedVault: VaultModel? = null
@@ -250,6 +257,59 @@ class SharedFilesPresenter @Inject constructor( //
 	fun onSkipExistingFilesPressed() {
 		differencesOfUploadAndExistingFiles()
 		location?.let { uploadFiles(filesForUpload, emptySet(), it.toCloudNode()) }
+	}
+
+	fun onAskEachPressed() {
+		val folder = location?.toCloudNode() ?: return
+		askEachActive = true
+		askEachIndex = 0
+		askEachConflicts = existingFilesForUpload.toMutableList()
+		askEachNonConflicting = filesForUpload.filter { !existingFilesForUpload.contains(it) }.toMutableList()
+		askEachChosen = mutableListOf()
+		if (askEachConflicts.isNotEmpty()) {
+			view?.showDialog(org.cryptomator.presentation.ui.dialog.PerFileConflictDialog.newInstance(askEachConflicts[0].fileName))
+		} else {
+			uploadFiles(folder, askEachNonConflicting)
+		}
+	}
+
+	// Callbacks from per-file conflict dialog
+	fun onPerFileConflictReplace(fileName: String) {
+		if (!askEachActive || askEachIndex >= askEachConflicts.size) return
+		val current = askEachConflicts[askEachIndex]
+		if (current.fileName == fileName) {
+			askEachChosen.add(current)
+			askEachIndex++
+			continueAskEach()
+		}
+	}
+
+	fun onPerFileConflictSkip(fileName: String) {
+		if (!askEachActive || askEachIndex >= askEachConflicts.size) return
+		val current = askEachConflicts[askEachIndex]
+		if (current.fileName == fileName) {
+			askEachIndex++
+			continueAskEach()
+		}
+	}
+
+	fun onPerFileConflictCancelBatch() {
+		askEachActive = false
+		view?.showProgress(ProgressModel.COMPLETED)
+	}
+
+	private fun continueAskEach() {
+		if (!askEachActive) return
+		if (askEachIndex < askEachConflicts.size) {
+			view?.showDialog(org.cryptomator.presentation.ui.dialog.PerFileConflictDialog.newInstance(askEachConflicts[askEachIndex].fileName))
+		} else {
+			val folder = location?.toCloudNode() ?: return
+			val toUpload: MutableList<UploadFile> = ArrayList()
+			toUpload.addAll(askEachNonConflicting)
+			toUpload.addAll(askEachChosen)
+			uploadFiles(folder, toUpload)
+			askEachActive = false
+		}
 	}
 
 	private fun differencesOfUploadAndExistingFiles() {

@@ -18,6 +18,7 @@ import org.cryptomator.presentation.ui.activity.view.SharedFilesView
 import org.cryptomator.presentation.ui.dialog.NotEnoughVaultsDialog
 import org.cryptomator.presentation.ui.dialog.ReplaceDialog
 import org.cryptomator.presentation.ui.dialog.UploadCloudFileDialog
+import org.cryptomator.presentation.ui.dialog.PerFileConflictDialog
 import org.cryptomator.presentation.ui.fragment.SharedFilesFragment
 import java.lang.String.format
 import javax.inject.Inject
@@ -27,6 +28,7 @@ import timber.log.Timber
 class SharedFilesActivity : BaseActivity<ActivityLayoutBinding>(ActivityLayoutBinding::inflate), //
 	SharedFilesView, //
 	ReplaceDialog.Callback, //
+	PerFileConflictDialog.Callback, //
 	NotEnoughVaultsDialog.Callback, //
 	UploadCloudFileDialog.Callback {
 
@@ -162,8 +164,25 @@ class SharedFilesActivity : BaseActivity<ActivityLayoutBinding>(ActivityLayoutBi
 		presenter.onSkipExistingFilesPressed()
 	}
 
+	override fun onReplaceAskEachClicked() {
+		presenter.onAskEachPressed()
+	}
+
 	override fun onReplaceCanceled() {
 		showProgress(COMPLETED)
+	}
+
+	// Per-file conflict dialog callbacks
+	override fun onPerFileConflictReplace(fileName: String) {
+		presenter.onPerFileConflictReplace(fileName)
+	}
+
+	override fun onPerFileConflictSkip(fileName: String) {
+		presenter.onPerFileConflictSkip(fileName)
+	}
+
+	override fun onPerFileConflictCancelBatch() {
+		presenter.onPerFileConflictCancelBatch()
 	}
 
 	override fun onNotEnoughVaultsOkClicked() {
