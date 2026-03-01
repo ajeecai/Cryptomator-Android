@@ -691,4 +691,10 @@
 	<string name="update_interval_1d">Once a day</string>
 	<string name="update_interval_never" translatable="false">@string/lock_timeout_never</string>
 
+    <!-- main screen log upload -->
+    <string name="main_upload_logs_label">Upload logs</string>
+    <string name="settings_log_upload_url">Log upload URL</string>
+    <string name="settings_log_upload_user">Log upload username</string>
+    <string name="settings_log_upload_password">Log upload password</string>
+    <string name="settings_log_upload_now">Upload now</string>
 </resources>

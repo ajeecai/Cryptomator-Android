@@ -164,6 +164,26 @@
 			android:key="sendErrorReport"
 			android:title="@string/screen_settings_error_report_label" />
 
+		<!-- Debug-only: log upload configuration -->
+		<androidx.preference.EditTextPreference
+			android:key="logUploadUrl"
+			android:title="@string/settings_log_upload_url"
+			android:defaultValue="https://" />
+
+		<androidx.preference.EditTextPreference
+			android:key="logUploadUser"
+			android:title="@string/settings_log_upload_user"
+			android:defaultValue="" />
+
+		<androidx.preference.EditTextPreference
+			android:key="logUploadPassword"
+			android:title="@string/settings_log_upload_password"
+			android:defaultValue="" />
+
+		<androidx.preference.Preference
+			android:key="uploadLogsNow"
+			android:title="@string/settings_log_upload_now" />
+
 	</PreferenceCategory>
 
 	<PreferenceCategory android:title="@string/screen_settings_advanced_settings">

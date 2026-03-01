@@ -165,6 +165,30 @@ constructor(context: Context) : SharedPreferences.OnSharedPreferenceChangeListen
 		return defaultSharedPreferences.getValue(USE_LRU_CACHE, false)
 	}
 
+	fun logUploadUrl(): String {
+		return defaultSharedPreferences.getValue(LOG_UPLOAD_URL, "")
+	}
+
+	fun setLogUploadUrl(url: String) {
+		defaultSharedPreferences.setValue(LOG_UPLOAD_URL, url)
+	}
+
+	fun logUploadUser(): String {
+		return defaultSharedPreferences.getValue(LOG_UPLOAD_USER, "")
+	}
+
+	fun setLogUploadUser(user: String) {
+		defaultSharedPreferences.setValue(LOG_UPLOAD_USER, user)
+	}
+
+	fun logUploadPassword(): String {
+		return defaultSharedPreferences.getValue(LOG_UPLOAD_PASSWORD, "")
+	}
+
+	fun setLogUploadPassword(pw: String) {
+		defaultSharedPreferences.setValue(LOG_UPLOAD_PASSWORD, pw)
+	}
+
 	override fun onSharedPreferenceChanged(sharedPreferences: SharedPreferences, key: String?) {
 		if (LOCK_TIMEOUT == key) {
 			val lockTimeout = lockTimeout
@@ -318,6 +342,9 @@ constructor(context: Context) : SharedPreferences.OnSharedPreferenceChangeListen
 		const val BIOMETRIC_AUTHENTICATION = "biometricAuthentication"
 		const val CRYPTOMATOR_VARIANTS = "cryptomatorVariants"
 		const val LICENSES_ACTIVITY = "licensesActivity"
+        const val LOG_UPLOAD_URL = "logUploadUrl"
+        const val LOG_UPLOAD_USER = "logUploadUser"
+        const val LOG_UPLOAD_PASSWORD = "logUploadPassword"
 	}
 
 	private inline fun SharedPreferences.edit(operation: (SharedPreferences.Editor) -> Unit) {

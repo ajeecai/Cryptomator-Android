@@ -63,6 +63,11 @@ class SettingsPresenter @Inject internal constructor(
 		CreateErrorReportArchiveTask().execute()
 	}
 
+	fun onUploadLogsToServerClicked() {
+		view?.showProgress(ProgressModel.GENERIC)
+		UploadLogsTask().execute()
+	}
+
 	fun onDebugModeChanged(enabled: Boolean) {
 		ReleaseLogger.updateDebugMode(enabled)
 	}
@@ -230,6 +235,116 @@ class SettingsPresenter @Inject internal constructor(
 		}
 	}
 
+	private inner class UploadLogsTask : AsyncTask<Void?, Exception?, Boolean>() {
+		override fun doInBackground(vararg params: Void?): Boolean {
+			return try {
+				val file = createCombinedLogsTxt()
+				uploadLogsViaHttp(file)
+				true
+			} catch (e: Exception) {
+				publishProgress(e)
+				false
+			}
+		}
+
+		override fun onProgressUpdate(vararg values: Exception?) {
+			val e = values.firstOrNull()
+			Timber.e(e, "Upload logs failed")
+			val reason = when (e) {
+				is java.net.UnknownHostException -> "无法解析服务器主机名"
+				is java.net.ConnectException -> "无法连接服务器"
+				is java.net.SocketTimeoutException -> "连接或读取超时"
+				is javax.net.ssl.SSLHandshakeException, is javax.net.ssl.SSLException -> "TLS/证书错误"
+				else -> e?.message ?: "未知错误"
+			}
+			android.widget.Toast.makeText(context(), "上传失败：$reason", android.widget.Toast.LENGTH_LONG).show()
+		}
+
+		override fun onPostExecute(result: Boolean) {
+			if (result) {
+				Toast.makeText(context(), "日志上传成功", Toast.LENGTH_SHORT).show()
+			}
+			view?.showProgress(ProgressModel.COMPLETED)
+		}
+	}
+
+	@Throws(IOException::class)
+	private fun uploadLogsViaHttp(file: File) {
+		val urlStr = sharedPreferencesHandler.logUploadUrl()
+		require(urlStr.isNotEmpty()) { "Log upload URL is empty" }
+		val user = sharedPreferencesHandler.logUploadUser()
+		val pw = sharedPreferencesHandler.logUploadPassword()
+
+		val boundary = "----CryptomatorBoundary${System.currentTimeMillis()}"
+		val lineEnd = "\r\n"
+		val twoHyphens = "--"
+		val deviceId = android.provider.Settings.Secure.getString(context().contentResolver, android.provider.Settings.Secure.ANDROID_ID) ?: "unknown"
+		val uploadFileName = "logs-$deviceId.txt"
+
+		val targetUrl = buildUrlWithFilename(urlStr, uploadFileName)
+		val url = java.net.URL(targetUrl)
+		val conn = (url.openConnection() as java.net.HttpURLConnection).apply {
+			// Use PUT to upload raw text file to the resource URL
+			requestMethod = "PUT"
+			setRequestProperty("Content-Type", "text/plain; charset=UTF-8")
+			if (user.isNotEmpty()) {
+				val basic = android.util.Base64.encodeToString("$user:$pw".toByteArray(), android.util.Base64.NO_WRAP)
+				setRequestProperty("Authorization", "Basic $basic")
+			}
+			doInput = true
+			doOutput = true
+			useCaches = false
+			connectTimeout = 20000
+			readTimeout = 60000
+		}
+
+		conn.outputStream.use { os ->
+			java.io.FileInputStream(file).use { fis ->
+				val buffer = ByteArray(8192)
+				while (true) {
+					val len = fis.read(buffer)
+					if (len <= 0) break
+					os.write(buffer, 0, len)
+				}
+			}
+			os.flush()
+		}
+
+		val code = conn.responseCode
+		if (code !in 200..299) {
+			val respMsg = try { conn.responseMessage } catch (_: Exception) { null }
+			val detail = buildString {
+				append("HTTP ").append(code)
+				respMsg?.let { append(' ').append(it) }
+			}
+			throw IOException(detail)
+		}
+	}
+
+	@Throws(IOException::class)
+	private fun createCombinedLogsTxt(): File {
+		val logsDir = File(activity().cacheDir, "logs")
+		if (!logsDir.exists() && !logsDir.mkdirs()) {
+			throw IOException("Failed to create logs directory")
+		}
+		val deviceId = android.provider.Settings.Secure.getString(context().contentResolver, android.provider.Settings.Secure.ANDROID_ID) ?: "unknown"
+		val outFile = File(logsDir, "logs-$deviceId.txt")
+		if (outFile.exists()) outFile.delete()
+
+		java.io.FileOutputStream(outFile, true).bufferedWriter(Charsets.UTF_8).use { writer ->
+			Logfiles.existingLogfiles(activity()).forEach { logfile ->
+				writer.appendLine("===== ${logfile.name} =====")
+				try {
+					logfile.forEachLine(Charsets.UTF_8) { line -> writer.appendLine(line) }
+				} catch (e: Exception) {
+					writer.appendLine("<failed to read ${logfile.name}: ${e.message}>")
+				}
+				writer.appendLine()
+			}
+		}
+		return outFile
+	}
+
 	@Throws(IOException::class)
 	private fun createErrorReportArchive(): File {
 		val logfileArchive = prepareLogfileArchive()
@@ -276,6 +391,18 @@ class SettingsPresenter @Inject internal constructor(
 		if (file.exists()) {
 			// noinspection ResultOfMethodCallIgnored
 			file.delete()
+		}
+	}
+
+	private fun buildUrlWithFilename(urlStr: String, fileName: String): String {
+		val q = urlStr.indexOf('?')
+		val base = if (q >= 0) urlStr.substring(0, q) else urlStr
+		val query = if (q >= 0) urlStr.substring(q) else ""
+		val lower = base.lowercase()
+		return when {
+			lower.endsWith("/$fileName".lowercase()) || lower.endsWith(fileName.lowercase()) -> base + query
+			base.endsWith("/") -> base + fileName + query
+			else -> "$base/$fileName$query"
 		}
 	}
 

@@ -6,4 +6,10 @@
 		android:orderInCategory="100"
 		android:title="@string/screen_settings_title"
 		app:showAsAction="never" />
+	<item
+		android:id="@+id/action_upload_logs"
+		android:orderInCategory="101"
+		android:title="@string/main_upload_logs_label"
+		android:visible="false"
+		app:showAsAction="never" />
 </menu>

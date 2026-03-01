@@ -6,6 +6,7 @@ import android.text.SpannableString
 import android.text.style.ForegroundColorSpan
 import android.view.View
 import android.widget.Toast
+import androidx.preference.EditTextPreference
 import androidx.appcompat.app.AppCompatDelegate
 import androidx.biometric.BiometricManager
 import androidx.core.content.ContextCompat
@@ -57,6 +58,7 @@ class SettingsFragment : PreferenceFragmentCompatLayout() {
 
 	private val debugModeChangedListener = Preference.OnPreferenceChangeListener { _, newValue ->
 		onDebugModeChanged(TRUE == newValue)
+		updateLogUploadPreferencesVisibility(TRUE == newValue)
 		true
 	}
 
@@ -245,6 +247,37 @@ class SettingsFragment : PreferenceFragmentCompatLayout() {
 		}
 		(findPreference(SharedPreferencesHandler.PHOTO_UPLOAD_VAULT) as Preference?)?.intent = Intent(context, AutoUploadChooseVaultActivity::class.java)
 		(findPreference(SharedPreferencesHandler.LICENSES_ACTIVITY) as Preference?)?.intent = Intent(context, LicensesActivity::class.java)
+
+		// Debug-only: Upload logs now
+		(findPreference("uploadLogsNow") as Preference?)?.onPreferenceClickListener = Preference.OnPreferenceClickListener {
+			activity().presenter().onUploadLogsToServerClicked()
+			true
+		}
+
+		setupLogUploadSummaries()
+		updateLogUploadPreferencesVisibility(SharedPreferencesHandler(requireContext()).debugMode())
+
+	}
+
+    private fun setupLogUploadSummaries() {
+        (findPreference("logUploadUrl") as EditTextPreference?)?.apply {
+            summaryProvider = EditTextPreference.SimpleSummaryProvider.getInstance()
+        }
+        (findPreference("logUploadUser") as EditTextPreference?)?.apply {
+            summaryProvider = EditTextPreference.SimpleSummaryProvider.getInstance()
+        }
+        (findPreference("logUploadPassword") as EditTextPreference?)?.apply {
+            summaryProvider = Preference.SummaryProvider<EditTextPreference> {
+                if (it.text.isNullOrEmpty()) "" else "*****"
+            }
+        }
+	}
+
+	private fun updateLogUploadPreferencesVisibility(debugEnabled: Boolean) {
+        val keys = arrayOf("logUploadUrl", "logUploadUser", "logUploadPassword", "uploadLogsNow")
+        keys.forEach { key ->
+            (findPreference(key) as Preference?)?.isVisible = debugEnabled
+        }
 	}
 
 	fun deactivateDebugMode() {

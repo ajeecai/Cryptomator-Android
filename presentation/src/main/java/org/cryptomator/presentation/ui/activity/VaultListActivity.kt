@@ -1,8 +1,10 @@
 package org.cryptomator.presentation.ui.activity
 
 import android.content.Intent
+import android.provider.Settings
 import android.net.Uri
 import android.os.Bundle
+import android.view.Menu
 import android.view.View
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.fragment.app.Fragment
@@ -97,12 +99,127 @@ class VaultListActivity : BaseActivity<ActivityLayoutObscureAwareBinding>(Activi
 
 	override fun getCustomMenuResource(): Int = R.menu.menu_vault_list
 
+	override fun onPrepareOptionsMenu(menu: Menu): Boolean {
+		// Show send log option only when Debug mode is enabled
+		val item = menu.findItem(R.id.action_upload_logs)
+		item?.isVisible = sharedPreferencesHandler.debugMode()
+		return super.onPrepareOptionsMenu(menu)
+	}
+
 	override fun onMenuItemSelected(itemId: Int): Boolean = when (itemId) {
 		R.id.action_settings -> {
 			vaultListPresenter.startIntent(settingsIntent())
 			true
 		}
+		R.id.action_upload_logs -> {
+			uploadLogsNowFromMain()
+			true
+		}
 		else -> super.onMenuItemSelected(itemId)
+	}
+
+	private fun uploadLogsNowFromMain() {
+		val prefs = org.cryptomator.util.SharedPreferencesHandler(applicationContext)
+		val urlStr = prefs.logUploadUrl()
+		if (urlStr.isEmpty()) {
+			android.widget.Toast.makeText(this, "请先在设置里配置上传URL", android.widget.Toast.LENGTH_LONG).show()
+			return
+		}
+
+		// show in-progress spinner on UI
+		showProgress(ProgressModel.GENERIC)
+
+		Thread {
+			val user = prefs.logUploadUser()
+			val pw = prefs.logUploadPassword()
+			val deviceId = Settings.Secure.getString(contentResolver, Settings.Secure.ANDROID_ID) ?: "unknown"
+			val uploadFileName = "logs-$deviceId.txt"
+
+			try {
+				// build combined logs
+				val logsDir = java.io.File(cacheDir, "logs")
+				if (!logsDir.exists()) logsDir.mkdirs()
+				val outFile = java.io.File(logsDir, uploadFileName)
+				if (outFile.exists()) outFile.delete()
+				java.io.FileOutputStream(outFile, true).bufferedWriter(Charsets.UTF_8).use { writer ->
+					org.cryptomator.presentation.logging.Logfiles.existingLogfiles(this).forEach { logfile ->
+						writer.appendLine("===== ${logfile.name} =====")
+						try {
+							logfile.forEachLine(Charsets.UTF_8) { line: String -> writer.appendLine(line) }
+						} catch (e: Exception) {
+							writer.appendLine("<failed to read ${logfile.name}: ${e.message}>")
+						}
+						writer.appendLine()
+					}
+				}
+
+				// build target URL with filename
+				val targetUrl = buildUrlWithFilename(urlStr, uploadFileName)
+
+				val url = java.net.URL(targetUrl)
+				val conn = (url.openConnection() as java.net.HttpURLConnection).apply {
+					requestMethod = "PUT"
+					setRequestProperty("Content-Type", "text/plain; charset=UTF-8")
+					if (user.isNotEmpty()) {
+						val basic = android.util.Base64.encodeToString("$user:$pw".toByteArray(), android.util.Base64.NO_WRAP)
+						setRequestProperty("Authorization", "Basic $basic")
+					}
+					doInput = true
+					doOutput = true
+					useCaches = false
+					connectTimeout = 20000
+					readTimeout = 60000
+				}
+
+				conn.outputStream.use { os ->
+					java.io.FileInputStream(outFile).use { fis ->
+						val buffer = ByteArray(8192)
+						while (true) {
+							val len = fis.read(buffer)
+							if (len <= 0) break
+							os.write(buffer, 0, len)
+						}
+					}
+					os.flush()
+				}
+
+				val code = conn.responseCode
+				if (code in 200..299) {
+					runOnUiThread { android.widget.Toast.makeText(this, "日志上传成功", android.widget.Toast.LENGTH_SHORT).show() }
+				} else {
+					val msg = try { conn.responseMessage } catch (_: Exception) { null }
+					val reason = buildString {
+						append("HTTP ").append(code)
+						msg?.let { append(' ').append(it) }
+					}
+					runOnUiThread { android.widget.Toast.makeText(this, "上传失败：$reason", android.widget.Toast.LENGTH_LONG).show() }
+				}
+			} catch (e: java.net.UnknownHostException) {
+				runOnUiThread { android.widget.Toast.makeText(this, "上传失败：无法解析服务器主机名", android.widget.Toast.LENGTH_LONG).show() }
+			} catch (e: java.net.ConnectException) {
+				runOnUiThread { android.widget.Toast.makeText(this, "上传失败：无法连接服务器", android.widget.Toast.LENGTH_LONG).show() }
+			} catch (e: java.net.SocketTimeoutException) {
+				runOnUiThread { android.widget.Toast.makeText(this, "上传失败：连接或读取超时", android.widget.Toast.LENGTH_LONG).show() }
+			} catch (e: javax.net.ssl.SSLException) {
+				runOnUiThread { android.widget.Toast.makeText(this, "上传失败：TLS/证书错误", android.widget.Toast.LENGTH_LONG).show() }
+			} catch (e: Exception) {
+				runOnUiThread { android.widget.Toast.makeText(this, "上传失败：${e.message ?: "未知错误"}", android.widget.Toast.LENGTH_LONG).show() }
+			} finally {
+				runOnUiThread { showProgress(ProgressModel.COMPLETED) }
+			}
+		}.start()
+	}
+
+	private fun buildUrlWithFilename(urlStr: String, fileName: String): String {
+		val q = urlStr.indexOf('?')
+		val base = if (q >= 0) urlStr.substring(0, q) else urlStr
+		val query = if (q >= 0) urlStr.substring(q) else ""
+		val lower = base.lowercase()
+		return when {
+			lower.endsWith("/$fileName".lowercase()) || lower.endsWith(fileName.lowercase()) -> base + query
+			base.endsWith("/") -> base + fileName + query
+			else -> "$base/$fileName$query"
+		}
 	}
 
 	override fun isVaultLocked(vaultModel: VaultModel): Boolean {

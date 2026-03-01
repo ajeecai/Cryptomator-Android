@@ -214,6 +214,11 @@
 	<string name="screen_settings_contact_label">请求帮助</string>
 	<string name="screen_settings_debug_mode_label">调试模式</string>
 	<string name="screen_settings_error_report_label">发送日志文件</string>
+	<string name="main_upload_logs_label">发送日志</string>
+	<string name="settings_log_upload_url">日志上传 URL</string>
+	<string name="settings_log_upload_user">日志上传用户名</string>
+	<string name="settings_log_upload_password">日志上传密码</string>
+	<string name="settings_log_upload_now">立即上传</string>
 	<string name="screen_settings_error_report_failed">发送失败</string>
 	<string name="screen_settings_security_label">安全提示</string>
 	<string name="screen_settings_section_version">版本</string>
